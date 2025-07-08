@@ -4,7 +4,7 @@ RUN apk add --no-cache vips-dev ffmpeg
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm install --production --force
 COPY . .
 
 EXPOSE 3000
