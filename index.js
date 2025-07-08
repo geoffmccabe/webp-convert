@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const sharp = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
-const { fileTypeFromBuffer } = require('file-type');
+const { fileTypeFromBuffer } = require('file-type/fromBuffer');
 const fs = require('fs');
 const path = require('path');
 
@@ -11,7 +11,6 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(express.json());
 
-// API key validation
 function authenticate(req, res, next) {
   const apiKey = req.headers['x-api-key'];
   if (!process.env.API_KEYS) {
@@ -29,28 +28,22 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
   try {
     const { quality = 80, format = 'webp' } = req.body;
     const file = req.file;
-    
-    if (!file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
+    if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
     const type = await fileTypeFromBuffer(file.buffer);
-    if (!type) {
-      return res.status(400).json({ error: 'Unsupported file type' });
-    }
+    if (!type) return res.status(400).json({ error: 'Unsupported file type' });
 
     let outputBuffer;
     const isAnimated = type.mime === 'image/gif';
 
     if (!isAnimated) {
       outputBuffer = await sharp(file.buffer)
-        .webp({ quality: parseInt(quality) })
+        .webp({ quality: parseInt(quality), lossless: false, effort: 6 })
         .toBuffer();
     } else {
       const tempDir = '/tmp';
       const inputExt = type.ext || 'gif';
       const outputExt = format === 'mp4' ? 'mp4' : 'webp';
-      
       const tempInput = path.join(tempDir, `input.${inputExt}`);
       const tempOutput = path.join(tempDir, `output.${outputExt}`);
 
@@ -89,12 +82,10 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     res.set('Content-Type', format === 'mp4' ? 'video/mp4' : 'image/webp');
     res.send(outputBuffer);
   } catch (error) {
-    console.error('Conversion error:', error);
-    res.status(500).json({ error: 'Conversion failed' });
+    console.error('Conversion error:', error.message);
+    res.status(500).json({ error: 'Conversion failed', details: error.message });
   }
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+app.listen(port, () => console.log(`Server running on port ${port}`));
