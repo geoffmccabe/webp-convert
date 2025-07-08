@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const sharp = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
-const { fromBuffer } = require('file-type');
+const { fileTypeFromBuffer } = require('file-type');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -21,22 +21,20 @@ function authenticate(req, res, next) {
 
 app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
   try {
-    const { quality } = req.body; // Compression quality (0-100)
+    const { quality } = req.body;
     const file = req.file;
     if (!file || !quality) return res.status(400).json({ error: 'Missing file or quality' });
 
-    const fileType = await fromBuffer(file.buffer);
+    const fileType = await fileTypeFromBuffer(file.buffer);
     const isAnimated = fileType?.mime === 'image/gif';
     let outputBuffer;
-    let outputFormat = req.body.format || 'webp'; // Default to WebP
+    let outputFormat = req.body.format || 'webp';
 
     if (!isAnimated) {
-      // Static image conversion
       outputBuffer = await sharp(file.buffer)
         .webp({ quality: parseInt(quality), lossless: false, effort: 6 })
         .toBuffer();
     } else {
-      // Animated image conversion (WebP or MP4)
       const tempInput = `/tmp/input.${fileType.ext}`;
       const tempOutput = `/tmp/output.${outputFormat}`;
 
@@ -45,7 +43,7 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
       await new Promise((resolve, reject) => {
         let command = ffmpeg(tempInput)
           .output(tempOutput)
-          .outputOptions(['-vf colorkey=0x000000:0.1:0.1']); // Preserve transparency
+          .outputOptions(['-vf colorkey=0x000000:0.1:0.1']);
 
         if (outputFormat === 'webp') {
           command
@@ -69,7 +67,8 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     res.setHeader('Content-Type', outputFormat === 'mp4' ? 'video/mp4' : 'image/webp');
     res.send(outputBuffer);
   } catch (error) {
-    res.status(500).json({ error: 'Conversion failed' });
+    console.error('Conversion error:', error);
+    res.status(500).json({ error: 'Conversion failed', details: error.message });
   }
 });
 
