@@ -2,75 +2,124 @@ const express = require('express');
 const multer = require('multer');
 const sharp = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
-const fileType = require('file-type');
+const { fileTypeFromBuffer } = require('file-type');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Middleware error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 app.use(express.json());
 
-// Middleware to verify API key
+// API key validation
 function authenticate(req, res, next) {
-  const apiKey = req.headers['x-api-key'];
-  const validKeys = process.env.API_KEYS?.split(',') || [];
-  if (!apiKey || !validKeys.includes(apiKey)) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const apiKey = req.headers['x-api-key'];
+    if (!process.env.API_KEYS) {
+      throw new Error('API_KEYS environment variable not set');
+    }
+    const validKeys = process.env.API_KEYS.split(',');
+    if (!apiKey || !validKeys.includes(apiKey)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  } catch (err) {
+    console.error('Authentication error:', err);
+    res.status(500).json({ error: 'Authentication failed' });
   }
-  next();
 }
 
 app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
   try {
-    const { quality } = req.body;
+    const { quality = 80, format = 'webp' } = req.body;
     const file = req.file;
-    if (!file || !quality) return res.status(400).json({ error: 'Missing file or quality' });
+    
+    if (!file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    if (quality < 1 || quality > 100) {
+      return res.status(400).json({ error: 'Quality must be between 1-100' });
+    }
 
-    const type = await fileType.fromBuffer(file.buffer);
-    const isAnimated = type?.mime === 'image/gif';
+    const type = await fileTypeFromBuffer(file.buffer);
+    if (!type) {
+      return res.status(400).json({ error: 'Unsupported file type' });
+    }
+
     let outputBuffer;
-    let outputFormat = req.body.format || 'webp';
+    const isAnimated = type.mime === 'image/gif';
 
     if (!isAnimated) {
       outputBuffer = await sharp(file.buffer)
-        .webp({ quality: parseInt(quality), lossless: false, effort: 6 })
+        .webp({ 
+          quality: parseInt(quality),
+          lossless: false,
+          effort: 6
+        })
         .toBuffer();
     } else {
-      const tempInput = `/tmp/input.${type.ext}`;
-      const tempOutput = `/tmp/output.${outputFormat}`;
+      const tempDir = '/tmp';
+      const inputExt = type.ext || 'gif';
+      const outputExt = format === 'mp4' ? 'mp4' : 'webp';
+      
+      const tempInput = path.join(tempDir, `input.${inputExt}`);
+      const tempOutput = path.join(tempDir, `output.${outputExt}`);
 
-      require('fs').writeFileSync(tempInput, file.buffer);
+      fs.writeFileSync(tempInput, file.buffer);
 
       await new Promise((resolve, reject) => {
-        let command = ffmpeg(tempInput)
+        const command = ffmpeg(tempInput)
           .output(tempOutput)
-          .outputOptions(['-vf colorkey=0x000000:0.1:0.1']);
+          .outputOptions([
+            '-vf', 'colorkey=0x000000:0.1:0.1',
+            '-movflags', 'faststart'
+          ]);
 
-        if (outputFormat === 'webp') {
-          command
-            .outputOptions(['-c:v libvpx-vp9', '-b:v 0', `-crf ${Math.round(63 - (quality * 0.63))}`]);
-        } else if (outputFormat === 'mp4') {
-          command
-            .outputOptions(['-c:v libx264', `-crf ${Math.round(51 - (quality * 0.51))}`]);
+        if (outputExt === 'webp') {
+          command.outputOptions([
+            '-c:v', 'libvpx-vp9',
+            '-b:v', '0',
+            '-crf', String(Math.round(63 - (quality * 0.63)))
+          ]);
+        } else {
+          command.outputOptions([
+            '-c:v', 'libx264',
+            '-crf', String(Math.round(51 - (quality * 0.51)))
+          ]);
         }
 
         command
-          .on('end', resolve)
+          .on('end', () => {
+            outputBuffer = fs.readFileSync(tempOutput);
+            fs.unlinkSync(tempInput);
+            fs.unlinkSync(tempOutput);
+            resolve();
+          })
           .on('error', reject)
           .run();
       });
-
-      outputBuffer = require('fs').readFileSync(tempOutput);
-      require('fs').unlinkSync(tempInput);
-      require('fs').unlinkSync(tempOutput);
     }
 
-    res.setHeader('Content-Type', outputFormat === 'mp4' ? 'video/mp4' : 'image/webp');
+    res.set('Content-Type', format === 'mp4' ? 'video/mp4' : 'image/webp');
     res.send(outputBuffer);
   } catch (error) {
     console.error('Conversion error:', error);
-    res.status(500).json({ error: 'Conversion failed', details: error.message });
+    res.status(500).json({ 
+      error: 'Conversion failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Listening on port ${port}`));
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+  console.log('Required environment variables:');
+  console.log('- API_KEYS: comma-separated list of valid API keys');
+});
