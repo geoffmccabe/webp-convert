@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const sharp = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
-const { fromBuffer } = require('file-type');
+const FileType = require('file-type');
 const fs = require('fs');
 const path = require('path');
 
@@ -13,11 +13,7 @@ app.use(express.json());
 
 function authenticate(req, res, next) {
   const apiKey = req.headers['x-api-key'];
-  if (!process.env.API_KEYS) {
-    console.error('API_KEYS environment variable not set');
-    return res.status(500).json({ error: 'Server configuration error' });
-  }
-  const validKeys = process.env.API_KEYS.split(',');
+  const validKeys = process.env.API_KEYS ? process.env.API_KEYS.split(',') : [];
   if (!apiKey || !validKeys.includes(apiKey)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -30,7 +26,7 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const type = await fromBuffer(file.buffer);
+    const type = await FileType.fromBuffer(file.buffer);
     if (!type) return res.status(400).json({ error: 'Unsupported file type' });
 
     let outputBuffer;
@@ -79,4 +75,13 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
       });
     }
 
-    res.set('Content-Type',
+    res.set('Content-Type', format === 'mp4' ? 'video/mp4' : 'image/webp');
+    res.send(outputBuffer);
+  } catch (error) {
+    console.error('Conversion error:', error.message);
+    res.status(500).json({ error: 'Conversion failed', details: error.message });
+  }
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Server running on port ${port}`));
