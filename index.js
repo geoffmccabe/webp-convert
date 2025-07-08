@@ -9,30 +9,20 @@ const path = require('path');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Middleware error:', err);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
 app.use(express.json());
 
 // API key validation
 function authenticate(req, res, next) {
-  try {
-    const apiKey = req.headers['x-api-key'];
-    if (!process.env.API_KEYS) {
-      throw new Error('API_KEYS environment variable not set');
-    }
-    const validKeys = process.env.API_KEYS.split(',');
-    if (!apiKey || !validKeys.includes(apiKey)) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    next();
-  } catch (err) {
-    console.error('Authentication error:', err);
-    res.status(500).json({ error: 'Authentication failed' });
+  const apiKey = req.headers['x-api-key'];
+  if (!process.env.API_KEYS) {
+    console.error('API_KEYS environment variable not set');
+    return res.status(500).json({ error: 'Server configuration error' });
   }
+  const validKeys = process.env.API_KEYS.split(',');
+  if (!apiKey || !validKeys.includes(apiKey)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
 }
 
 app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
@@ -42,9 +32,6 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     
     if (!file) {
       return res.status(400).json({ error: 'No file uploaded' });
-    }
-    if (quality < 1 || quality > 100) {
-      return res.status(400).json({ error: 'Quality must be between 1-100' });
     }
 
     const type = await fileTypeFromBuffer(file.buffer);
@@ -57,11 +44,7 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
 
     if (!isAnimated) {
       outputBuffer = await sharp(file.buffer)
-        .webp({ 
-          quality: parseInt(quality),
-          lossless: false,
-          effort: 6
-        })
+        .webp({ quality: parseInt(quality) })
         .toBuffer();
     } else {
       const tempDir = '/tmp';
@@ -76,10 +59,7 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
       await new Promise((resolve, reject) => {
         const command = ffmpeg(tempInput)
           .output(tempOutput)
-          .outputOptions([
-            '-vf', 'colorkey=0x000000:0.1:0.1',
-            '-movflags', 'faststart'
-          ]);
+          .outputOptions(['-vf', 'colorkey=0x000000:0.1:0.1']);
 
         if (outputExt === 'webp') {
           command.outputOptions([
@@ -110,16 +90,11 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     res.send(outputBuffer);
   } catch (error) {
     console.error('Conversion error:', error);
-    res.status(500).json({ 
-      error: 'Conversion failed',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    res.status(500).json({ error: 'Conversion failed' });
   }
 });
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log('Required environment variables:');
-  console.log('- API_KEYS: comma-separated list of valid API keys');
 });
