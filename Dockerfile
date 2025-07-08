@@ -1,16 +1,11 @@
 FROM node:20-alpine
 
-# Install system dependencies
-RUN apk add --no-cache vips-dev ffmpeg
+# Install build tools and dependencies for sharp and ffmpeg
+RUN apk add --no-cache vips-dev ffmpeg build-base python3 py3-pip
 
-# Create app directory
 WORKDIR /app
-
-# Install npm packages
 COPY package*.json ./
-RUN npm install --omit=dev
-
-# Bundle app source
+RUN npm install
 COPY . .
 
 EXPOSE 3000
