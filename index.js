@@ -5,11 +5,23 @@ const ffmpeg = require('fluent-ffmpeg');
 const FileType = require('file-type');
 const fs = require('fs');
 const path = require('path');
+const Queue = require('bull');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
-
 app.use(express.json());
+
+// Redis queue with error handling
+const convertQueue = new Queue('image-conversion', {
+  redis: { 
+    host: process.env.REDIS_HOST || 'localhost', 
+    port: parseInt(process.env.REDIS_PORT) || 6379 
+  }
+});
+
+convertQueue.on('error', (error) => {
+  console.error('Queue error:', error.message);
+});
 
 function authenticate(req, res, next) {
   const apiKey = req.headers['x-api-key'];
@@ -26,25 +38,37 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const type = await FileType.fromBuffer(file.buffer);
-    if (!type) return res.status(400).json({ error: 'Unsupported file type' });
+    const job = await convertQueue.add({ file: file.buffer, quality, format }, {
+      timeout: 60000 // 60s timeout for job
+    });
+    res.json({ jobId: job.id, status: 'queued' });
+  } catch (error) {
+    console.error('Queue error:', error.message);
+    res.status(500).json({ error: 'Failed to queue conversion', details: error.message });
+  }
+});
+
+convertQueue.process(async (job, done) => {
+  const tempDir = '/tmp';
+  const tempInput = path.join(tempDir, `input-${job.id}.tmp`);
+  const tempOutput = path.join(tempDir, `output-${job.id}.tmp`);
+  try {
+    const { file, quality, format } = job.data;
+    const type = await FileType.fromBuffer(file);
+    if (!type) throw new Error('Unsupported file type');
 
     let outputBuffer;
     const isAnimated = type.mime === 'image/gif';
+    const outputExt = format === 'mp4' ? 'mp4' : 'webp';
+
+    fs.writeFileSync(tempInput, file);
 
     if (!isAnimated) {
-      outputBuffer = await sharp(file.buffer)
+      outputBuffer = await sharp(file)
         .webp({ quality: parseInt(quality), lossless: false, effort: 6 })
         .toBuffer();
+      fs.writeFileSync(tempOutput, outputBuffer);
     } else {
-      const tempDir = '/tmp';
-      const inputExt = type.ext || 'gif';
-      const outputExt = format === 'mp4' ? 'mp4' : 'webp';
-      const tempInput = path.join(tempDir, `input.${inputExt}`);
-      const tempOutput = path.join(tempDir, `output.${outputExt}`);
-
-      fs.writeFileSync(tempInput, file.buffer);
-
       await new Promise((resolve, reject) => {
         const command = ffmpeg(tempInput)
           .output(tempOutput)
@@ -64,22 +88,39 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
         }
 
         command
-          .on('end', () => {
-            outputBuffer = fs.readFileSync(tempOutput);
-            fs.unlinkSync(tempInput);
-            fs.unlinkSync(tempOutput);
-            resolve();
-          })
+          .on('end', resolve)
           .on('error', reject)
           .run();
       });
+      outputBuffer = fs.readFileSync(tempOutput);
     }
 
+    fs.writeFileSync(tempOutput, outputBuffer);
+    done(null, { outputPath: tempOutput, format: outputExt });
+  } catch (error) {
+    done(error);
+  } finally {
+    // Clean up temporary files
+    if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+  }
+});
+
+app.get('/result/:jobId', authenticate, async (req, res) => {
+  try {
+    const job = await convertQueue.getJob(req.params.jobId);
+    if (!job || !job.returnvalue) return res.status(404).json({ error: 'Job not found or not completed' });
+
+    const { outputPath, format } = job.returnvalue;
+    if (!fs.existsSync(outputPath)) return res.status(404).json({ error: 'Output file not found' });
+
+    const outputBuffer = fs.readFileSync(outputPath);
     res.set('Content-Type', format === 'mp4' ? 'video/mp4' : 'image/webp');
     res.send(outputBuffer);
+    fs.unlinkSync(outputPath); // Clean up
   } catch (error) {
-    console.error('Conversion error:', error.message);
-    res.status(500).json({ error: 'Conversion failed', details: error.message });
+    console.error('Result error:', error.message);
+    res.status(500).json({ error: 'Failed to retrieve result', details: error.message });
   }
 });
 
