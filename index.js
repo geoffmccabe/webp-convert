@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const sharp = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
-const { fileTypeFromBuffer } = require('file-type');
+const fileType = require('file-type');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -12,7 +12,7 @@ app.use(express.json());
 // Middleware to verify API key
 function authenticate(req, res, next) {
   const apiKey = req.headers['x-api-key'];
-  const validKeys = process.env.API_KEYS.split(',');
+  const validKeys = process.env.API_KEYS?.split(',') || [];
   if (!apiKey || !validKeys.includes(apiKey)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -25,8 +25,8 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     const file = req.file;
     if (!file || !quality) return res.status(400).json({ error: 'Missing file or quality' });
 
-    const fileType = await fileTypeFromBuffer(file.buffer);
-    const isAnimated = fileType?.mime === 'image/gif';
+    const type = await fileType.fromBuffer(file.buffer);
+    const isAnimated = type?.mime === 'image/gif';
     let outputBuffer;
     let outputFormat = req.body.format || 'webp';
 
@@ -35,7 +35,7 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
         .webp({ quality: parseInt(quality), lossless: false, effort: 6 })
         .toBuffer();
     } else {
-      const tempInput = `/tmp/input.${fileType.ext}`;
+      const tempInput = `/tmp/input.${type.ext}`;
       const tempOutput = `/tmp/output.${outputFormat}`;
 
       require('fs').writeFileSync(tempInput, file.buffer);
