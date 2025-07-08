@@ -1,11 +1,14 @@
+[nix]
+channel = "nixpkgs-unstable"  # Forces Railway to use the latest packages
+
 [phases.setup]
-  nixPkgs = ['nodejs_20', 'ffmpeg']
+nixPkgs = ["nodejs-20_x", "ffmpeg"]
 
 [phases.build]
-  cmds = ['npm install']
+cmds = ["npm install"]
 
 [phases.start]
-  cmd = 'node index.js'
+cmd = "node index.js"
 
 [deploy]
-  port = 3000
+port = 3000
