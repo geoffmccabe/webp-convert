@@ -11,7 +11,6 @@ const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 app.use(express.json());
 
-// Redis queue with error handling
 const convertQueue = new Queue('image-conversion', {
   redis: { 
     host: process.env.REDIS_HOST || 'localhost', 
@@ -39,9 +38,10 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
     if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
     const job = await convertQueue.add({ file: file.buffer, quality, format }, {
-      timeout: 60000 // 60s timeout for job
+      attempts: 3,
+      timeout: 60000
     });
-    res.json({ jobId: job.id, status: 'queued' });
+    res.json({ jobId: job.id, status: 'queued', checkStatus: `/result/${job.id}` });
   } catch (error) {
     console.error('Queue error:', error.message);
     res.status(500).json({ error: 'Failed to queue conversion', details: error.message });
@@ -51,7 +51,8 @@ app.post('/convert', authenticate, upload.single('file'), async (req, res) => {
 convertQueue.process(async (job, done) => {
   const tempDir = '/tmp';
   const tempInput = path.join(tempDir, `input-${job.id}.tmp`);
-  const tempOutput = path.join(tempDir, `output-${job.id}.tmp`);
+  const outputExt = job.data.format === 'mp4' ? 'mp4' : 'webp';
+  const tempOutput = path.join(tempDir, `output-${job.id}.${outputExt}`);
   try {
     const { file, quality, format } = job.data;
     const type = await FileType.fromBuffer(file);
@@ -59,7 +60,6 @@ convertQueue.process(async (job, done) => {
 
     let outputBuffer;
     const isAnimated = type.mime === 'image/gif';
-    const outputExt = format === 'mp4' ? 'mp4' : 'webp';
 
     fs.writeFileSync(tempInput, file);
 
@@ -100,7 +100,6 @@ convertQueue.process(async (job, done) => {
   } catch (error) {
     done(error);
   } finally {
-    // Clean up temporary files
     if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
     if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
   }
@@ -117,7 +116,7 @@ app.get('/result/:jobId', authenticate, async (req, res) => {
     const outputBuffer = fs.readFileSync(outputPath);
     res.set('Content-Type', format === 'mp4' ? 'video/mp4' : 'image/webp');
     res.send(outputBuffer);
-    fs.unlinkSync(outputPath); // Clean up
+    fs.unlinkSync(outputPath);
   } catch (error) {
     console.error('Result error:', error.message);
     res.status(500).json({ error: 'Failed to retrieve result', details: error.message });
